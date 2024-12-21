@@ -1,9 +1,10 @@
+from sklearn.linear_model import LinearRegression
+import plotly.graph_objects as go
 from datetime import datetime
 import streamlit as st
 import pandas as pd
 import asyncio
 import httpx
-import plotly.graph_objects as go
 
 
 def file_load(file) -> pd.DataFrame | None:
@@ -58,35 +59,53 @@ def normal_temp(temp, city_data, season):
     return lower_bound <= temp <= upper_bound
 
 
-async def handle_city(city, data, apikey, placeholder, use_threads=True, test=False):
+def temp_trend(city_data: pd.DataFrame):
+    time = city_data['timestamp']
+    city_data['days'] = (time - time.min()).apply(lambda x: x.n)
+    X = [[day] for day in city_data['days'].tolist()]
+    y = city_data['temperature'].tolist()
+    model = LinearRegression().fit(X, y)
+    trend = model.coef_[0]
+    return trend
+
+
+async def handle_city(city, data, apikey, placeholder, use_threads=True, test=False, temp=None):
     with placeholder.container():
         if use_threads:
             city_data = await asyncio.to_thread(analyze_temp, data[data['city'] == city].copy())
         else:
             city_data = analyze_temp(data[data['city'] == city].copy())
+
         data_index = city_data.set_index('timestamp').to_timestamp()
         anomalies = data_index[data_index['anomaly'] == True]
-
-        temp = await fetch_temp(city, apikey)
-        if not temp: return
-
-        season = get_season()
-        is_normal = normal_temp(temp, city_data, season)
-        status = 'нормальна' if is_normal else 'аномальна'
         seasonal_stats = city_data.groupby('season')['temperature'].agg(['mean', 'std'])
+        trend = temp_trend(city_data)
+        trend_status = 'положителен' if trend > 0 else 'отрицателен'
+
+        if apikey: temp = await fetch_temp(city, apikey)
+        if temp:
+            season = get_season()
+            is_normal = normal_temp(temp, city_data, season)
+            status = 'нормальна' if is_normal else 'аномальна'
 
         if test: return
         st.markdown(f"<h1 style='color: #4da4ff;'>Анализ города {city}</h1>",
                     unsafe_allow_html=True)
         opis_placeholder = st.empty()
-        chart_placeholder = st.empty()
         anomalies_placeholder = st.empty()
-        temp_placeholder = st.empty()
+        chart_placeholder = st.empty()
+        trend_placeholder = st.empty()
+        if temp: temp_placeholder = st.empty()
 
         with opis_placeholder.container():
             st.write(f"Средняя температура: {city_data['temperature'].mean():.2f} °C")
             st.write(f"Минимальная температура: {city_data['temperature'].min():.2f} °C")
             st.write(f"Максимальная температура: {city_data['temperature'].max():.2f} °C")
+
+        with anomalies_placeholder.container():
+            st.header('Аномалии')
+            st.write(f"Всего аномалий {city_data['anomaly'].sum()} из {len(city_data)}")
+            st.dataframe(city_data[city_data['anomaly']])
 
         with chart_placeholder.container():
             st.header('Временной ряд температур с аномалиями')
@@ -116,15 +135,15 @@ async def handle_city(city, data, apikey, placeholder, use_threads=True, test=Fa
                                                    line=dict(color='black', width=1)),
                                        hovertemplate='Диапазон: %{x} °C<br>Частота: %{y}<extra></extra>'))
             st.plotly_chart(fig)
+        with trend_placeholder.container():
+            st.header('Температурный тренд города')
+            st.write(f'Тренд {trend_status}. \
+                     Температура в среднем изменяется на {trend:.5f} °C в день, {trend*365:.4f} °C в год')
 
-        with anomalies_placeholder.container():
-            st.header('Аномалии')
-            st.write(f"Всего аномалий {city_data['anomaly'].sum()} из {len(city_data)}")
-            st.dataframe(city_data[city_data['anomaly']])
-
-        with temp_placeholder.container():
-            st.header(f'Текущая температура в {city}: {temp}°C')
-            st.write(f'Температура {status} для сезона {season}')
+        if temp:
+            with temp_placeholder.container():  # type: ignore
+                st.header(f'Текущая температура в {city}: {temp}°C')
+                st.write(f'Температура {status} для сезона {season}')  # type: ignore
 
 
 async def benchmark(cities, data, apikey, placeholders, test=True):
@@ -134,8 +153,7 @@ async def benchmark(cities, data, apikey, placeholders, test=True):
              for city in cities]
     await asyncio.gather(*tasks)
     time_sequential = asyncio.get_event_loop().time() - start_time
-    st.sidebar.markdown(
-        f'- Распараллеленая обработка городов и анализа: {time_sequential:.2f} секунд')
+    st.sidebar.markdown(f'- Распараллеленая обработка городов и анализа: {time_sequential:.2f} секунд')
 
     # Async обработка городов
     start_time = asyncio.get_event_loop().time()
@@ -150,25 +168,26 @@ async def benchmark(cities, data, apikey, placeholders, test=True):
     for city in cities:
         await handle_city(city, data, apikey, placeholders[city], test=test)
     time_noasync = asyncio.get_event_loop().time() - start_time
-    st.sidebar.markdown(
-        f'- Последовательная обработка городов: {time_noasync:.2f} секунд')
+    st.sidebar.markdown(f'- Последовательная обработка городов: {time_noasync:.2f} секунд')
 
 
 async def main():
     st.title('Мониторинг и анализ погоды')
     st.sidebar.markdown('## Меню управления')
-
-    file = st.sidebar.file_uploader(
-        'Загрузить исторические данные о температуре', type='csv')
+    expander = st.sidebar.expander("Настройки анализа", expanded=True)
+    with expander:
+        file = st.file_uploader(
+            'Загрузить исторические данные о температуре', type='csv')
     if not file or (data := file_load(file)) is None: return
-    
-    apikey = st.sidebar.text_input('Введите API Key OpenWeatherMap', type='password')
+    with expander:
+        apikey = st.text_input('Введите API Key OpenWeatherMap', type='password')
     cities = st.sidebar.multiselect('Выберите города', data['city'].unique())
-    if not apikey: return
+    button = st.sidebar.button('Начать анализ')
+    if not button: return
     placeholders = {city: st.empty() for city in cities}
     tasks = [handle_city(city, data, apikey, placeholders[city]) for city in cities]
-    await asyncio.gather(*tasks)
 
+    await asyncio.gather(*tasks)
     await benchmark(cities, data, apikey, placeholders)
 
 if __name__ == '__main__':
