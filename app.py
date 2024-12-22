@@ -130,9 +130,8 @@ async def handle_city(city, data, apikey, placeholder, use_threads=True, test=Fa
 
             st.header('Распределение температуры')
             fig = go.Figure()
-            fig.add_trace(go.Histogram(x=city_data['temperature'],
-                                       marker=dict(color='lightskyblue',
-                                                   line=dict(color='black', width=1)),
+            tr_marker = dict(color='lightskyblue', line=dict(color='black', width=1))
+            fig.add_trace(go.Histogram(x=city_data['temperature'], marker=tr_marker,
                                        hovertemplate='Диапазон: %{x} °C<br>Частота: %{y}<extra></extra>'))
             st.plotly_chart(fig)
         with trend_placeholder.container():
