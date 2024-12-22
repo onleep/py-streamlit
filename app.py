@@ -79,7 +79,7 @@ async def handle_city(city, data, apikey, placeholder, use_threads=True, test=Fa
         data_index = city_data.set_index('timestamp').to_timestamp()
         anomalies = data_index[data_index['anomaly'] == True]
         seasonal_stats = city_data.groupby('season')['temperature'].agg(['mean', 'std'])
-        trend = temp_trend(city_data)
+        trend = temp_trend(city_data.copy())
         trend_status = 'положителен' if trend > 0 else 'отрицателен'
 
         if apikey: temp = await fetch_temp(city, apikey)
